@@ -30,10 +30,11 @@ class FinancialAgent:
             raise ValueError("未找到 ANTHROPIC_API_KEY 环境变量")
 
         # 初始化 Anthropic 客户端
-        self.client = anthropic.Anthropic(
-            api_key=self.api_key,
-            base_url=self.base_url
-        )
+        client_kwargs = {"api_key": self.api_key}
+        if self.base_url:
+            client_kwargs["base_url"] = self.base_url
+
+        self.client = anthropic.Anthropic(**client_kwargs)
 
         logger.info(f"财务分析 Agent 初始化成功，使用模型: {self.model}")
 
