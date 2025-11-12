@@ -11,6 +11,9 @@ lxml==5.1.0
 selenium==4.16.0
 playwright==1.41.0
 
+# Financial Data APIs
+akshare>=1.17.0
+
 # Data Processing
 pandas==2.2.0
 numpy==1.26.3
