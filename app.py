@@ -177,23 +177,28 @@ def show_data_overview(companies):
                     metrics_col1, metrics_col2, metrics_col3 = st.columns(3)
 
                     with metrics_col1:
+                        revenue = latest.get('营业收入(亿元)', 0)
+                        prev_revenue = financial_data.iloc[-2].get('营业收入(亿元)', 0) if len(financial_data) > 1 else 0
                         st.metric(
                             "营业收入",
-                            f"{latest['营业收入(亿元)']} 亿",
-                            delta=f"{financial_data.iloc[-2]['营业收入(亿元)'] if len(financial_data) > 1 else 0:.2f}"
+                            f"{revenue:.2f} 亿",
+                            delta=f"{prev_revenue:.2f}"
                         )
 
                     with metrics_col2:
+                        profit = latest.get('净利润(亿元)', 0)
+                        prev_profit = financial_data.iloc[-2].get('净利润(亿元)', 0) if len(financial_data) > 1 else 0
                         st.metric(
                             "净利润",
-                            f"{latest['净利润(亿元)']} 亿",
-                            delta=f"{financial_data.iloc[-2]['净利润(亿元)'] if len(financial_data) > 1 else 0:.2f}"
+                            f"{profit:.2f} 亿",
+                            delta=f"{prev_profit:.2f}"
                         )
 
                     with metrics_col3:
+                        roe = latest.get('净资产收益率(%)', 0)
                         st.metric(
                             "ROE",
-                            f"{latest['净资产收益率(%)']}%"
+                            f"{roe:.2f}%"
                         )
 
                     # 显示数据表

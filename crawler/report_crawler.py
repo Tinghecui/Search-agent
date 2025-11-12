@@ -79,58 +79,182 @@ class FinancialReportCrawler:
             years: 获取最近几年的数据
 
         Returns:
-            财务数据DataFrame
+            财务数据DataFrame（标准化列名）
         """
         logger.info(f"正在从 AKShare 获取 {company_name} 的真实财务数据...")
 
-        # 获取主要财务指标
-        # AKShare 函数: stock_financial_abstract_ths
         try:
-            # 获取财务摘要数据
-            financial_data = ak.stock_financial_analysis_indicator(symbol=stock_code)
+            # 使用东方财富的业绩报表接口获取财务数据
+            # 这个接口返回：报告期、营业收入、净利润等关键财务指标
+            logger.info(f"尝试获取 {stock_code} 的业绩报表数据...")
+            financial_data = ak.stock_yjbb_em(symbol=stock_code)
 
             if financial_data.empty:
-                logger.warning(f"{company_name} 财务数据为空，尝试其他接口")
-                # 尝试备用接口
-                financial_data = ak.stock_zh_a_hist_min_em(symbol=stock_code, period='1', adjust='qfq')
+                logger.warning(f"{company_name} 业绩报表为空，尝试财务分析指标接口")
+                financial_data = ak.stock_financial_analysis_indicator(symbol=stock_code)
 
-            # 只保留最近几年的数据
-            if '日期' in financial_data.columns:
-                financial_data['日期'] = pd.to_datetime(financial_data['日期'])
-                cutoff_date = datetime.now() - timedelta(days=365 * years)
-                financial_data = financial_data[financial_data['日期'] >= cutoff_date]
+            if financial_data.empty:
+                logger.warning(f"{company_name} 财务分析指标也为空，尝试个股信息接口")
+                # 最后尝试获取个股基本信息
+                financial_data = ak.stock_individual_info_em(symbol=stock_code)
 
-            # 重命名列以匹配应用需求
-            column_mapping = {
-                '日期': '报告期',
-                '营业收入': '营业收入(亿元)',
-                '净利润': '净利润(亿元)',
-                '总资产': '总资产(亿元)',
-                '净资产': '净资产(亿元)',
-                '资产负债率': '资产负债率(%)',
-                '净资产收益率': '净资产收益率(%)',
-                '每股收益': '每股收益(元)',
+            logger.info(f"原始数据列名: {list(financial_data.columns)}")
+            logger.info(f"原始数据形状: {financial_data.shape}")
+
+            # 打印前几行以调试
+            if not financial_data.empty:
+                logger.info(f"数据预览:\n{financial_data.head(3)}")
+
+            # 标准化列名映射（根据 AKShare 实际返回的列名）
+            # 这里需要处理多种可能的列名格式
+            column_mapping = self._build_column_mapping(financial_data.columns)
+
+            # 重命名列
+            financial_data = financial_data.rename(columns=column_mapping)
+
+            # 确保必需的列存在，如果不存在则创建默认值
+            required_columns = {
+                '报告期': datetime.now().strftime('%Y-%m-%d'),
+                '营业收入(亿元)': 0.0,
+                '净利润(亿元)': 0.0,
+                '总资产(亿元)': 0.0,
+                '净资产(亿元)': 0.0,
+                '资产负债率(%)': 0.0,
+                '净资产收益率(%)': 0.0,
+                '每股收益(元)': 0.0,
             }
 
-            # 只重命名存在的列
-            existing_columns = {k: v for k, v in column_mapping.items() if k in financial_data.columns}
-            financial_data = financial_data.rename(columns=existing_columns)
+            for col, default_val in required_columns.items():
+                if col not in financial_data.columns:
+                    logger.warning(f"列 '{col}' 不存在，使用默认值")
+                    financial_data[col] = default_val
+
+            # 处理日期列
+            if '报告期' in financial_data.columns:
+                financial_data['报告期'] = pd.to_datetime(financial_data['报告期'], errors='coerce')
+                # 过滤最近几年的数据
+                cutoff_date = datetime.now() - timedelta(days=365 * years)
+                financial_data = financial_data[financial_data['报告期'] >= cutoff_date]
+                # 转换回字符串格式
+                financial_data['报告期'] = financial_data['报告期'].dt.strftime('%Y-%m-%d')
 
             # 添加公司信息
             financial_data['公司名称'] = company_name
             financial_data['股票代码'] = stock_code
 
-            # 转换单位（假设原始数据是元，转换为亿元）
-            for col in ['营业收入(亿元)', '净利润(亿元)', '总资产(亿元)', '净资产(亿元)']:
-                if col in financial_data.columns:
-                    financial_data[col] = financial_data[col] / 100000000
+            # 数据单位转换（根据实际数据判断是否需要转换）
+            self._normalize_units(financial_data)
+
+            # 只保留需要的列
+            final_columns = ['报告期', '营业收入(亿元)', '净利润(亿元)', '总资产(亿元)',
+                           '净资产(亿元)', '资产负债率(%)', '净资产收益率(%)',
+                           '每股收益(元)', '公司名称', '股票代码']
+
+            financial_data = financial_data[final_columns]
 
             logger.info(f"成功获取 {company_name} 的真实财务数据，共 {len(financial_data)} 条记录")
+            logger.info(f"最终列名: {list(financial_data.columns)}")
+
             return financial_data
 
         except Exception as e:
             logger.error(f"AKShare 获取数据出错: {str(e)}")
+            import traceback
+            logger.error(traceback.format_exc())
             raise
+
+    def _build_column_mapping(self, columns: pd.Index) -> dict:
+        """
+        构建列名映射字典
+        处理 AKShare 可能返回的各种列名格式
+        """
+        mapping = {}
+
+        # 日期相关
+        for col in columns:
+            col_str = str(col)
+            col_lower = col_str.lower()
+
+            # 报告期/日期
+            if any(x in col_lower for x in ['日期', 'date', '报告期', '截止日期', '公告日期']):
+                mapping[col] = '报告期'
+
+            # 营业收入（多种可能的列名）
+            elif any(x in col_lower for x in ['营业收入', '营收', 'revenue', '主营业务收入', '营业总收入']):
+                mapping[col] = '营业收入(亿元)'
+
+            # 净利润（归属母公司股东的净利润）
+            elif any(x in col_lower for x in ['净利润', 'net_profit', '归属', '扣非净利润']):
+                if '扣非' not in col_lower:  # 优先使用归母净利润
+                    mapping[col] = '净利润(亿元)'
+
+            # 总资产
+            elif any(x in col_lower for x in ['总资产', 'total_asset', '资产总计']):
+                mapping[col] = '总资产(亿元)'
+
+            # 净资产/股东权益
+            elif any(x in col_lower for x in ['净资产', 'net_asset', '股东权益', '所有者权益', '归属母公司']):
+                if '负债' not in col_lower:  # 排除包含"负债"的列
+                    mapping[col] = '净资产(亿元)'
+
+            # 资产负债率
+            elif any(x in col_lower for x in ['资产负债率', 'debt_ratio', '负债率']):
+                mapping[col] = '资产负债率(%)'
+
+            # 净资产收益率 ROE
+            elif any(x in col_lower for x in ['净资产收益率', 'roe', '加权平均']):
+                mapping[col] = '净资产收益率(%)'
+
+            # 每股收益 EPS
+            elif any(x in col_lower for x in ['每股收益', 'eps', '基本每股']):
+                mapping[col] = '每股收益(元)'
+
+        logger.info(f"列名映射: {mapping}")
+        return mapping
+
+    def _normalize_units(self, df: pd.DataFrame):
+        """
+        标准化数据单位
+        将所有金额转换为亿元，百分比保持不变
+        """
+        # 需要转换为亿元的列
+        money_columns = ['营业收入(亿元)', '净利润(亿元)', '总资产(亿元)', '净资产(亿元)']
+
+        for col in money_columns:
+            if col in df.columns:
+                # 检查数值范围，判断当前单位
+                try:
+                    sample_val = df[col].dropna().iloc[0] if not df[col].dropna().empty else 0
+
+                    # 如果数值很大（>1000），可能是元为单位，需要转换为亿元
+                    if abs(sample_val) > 1000:
+                        logger.info(f"转换 {col} 从元到亿元")
+                        df[col] = df[col] / 100000000
+                    # 如果数值适中（10-1000），可能是万元，转换为亿元
+                    elif abs(sample_val) > 10:
+                        logger.info(f"转换 {col} 从万元到亿元")
+                        df[col] = df[col] / 10000
+                    # 否则可能已经是亿元
+                    else:
+                        logger.info(f"{col} 已经是亿元单位")
+
+                except Exception as e:
+                    logger.warning(f"单位转换出错: {e}")
+                    pass
+
+        # 确保百分比列的值在合理范围内（0-100）
+        percent_columns = ['资产负债率(%)', '净资产收益率(%)']
+        for col in percent_columns:
+            if col in df.columns:
+                try:
+                    sample_val = df[col].dropna().iloc[0] if not df[col].dropna().empty else 0
+                    # 如果值很小（<1），可能是小数形式，需要乘以100
+                    if 0 < abs(sample_val) < 1:
+                        logger.info(f"转换 {col} 从小数到百分比")
+                        df[col] = df[col] * 100
+                except Exception as e:
+                    logger.warning(f"百分比转换出错: {e}")
+                    pass
 
     def _get_mock_financial_data(self, company_name: str, stock_code: str, years: int = 3) -> pd.DataFrame:
         """
