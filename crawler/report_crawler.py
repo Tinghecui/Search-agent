@@ -83,47 +83,70 @@ class FinancialReportCrawler:
         """
         logger.info(f"正在从 AKShare 获取 {company_name} 的真实财务数据...")
 
-        # 获取主要财务指标
-        # AKShare 函数: stock_financial_abstract_ths
         try:
-            # 获取财务摘要数据
-            financial_data = ak.stock_financial_analysis_indicator(symbol=stock_code)
+            # 使用同花顺财务摘要接口获取财务数据
+            financial_data = ak.stock_financial_abstract_ths(symbol=stock_code, indicator='按报告期')
 
             if financial_data.empty:
-                logger.warning(f"{company_name} 财务数据为空，尝试其他接口")
-                # 尝试备用接口
-                financial_data = ak.stock_zh_a_hist_min_em(symbol=stock_code, period='1', adjust='qfq')
+                logger.warning(f"{company_name} 财务数据为空")
+                raise ValueError(f"未获取到 {company_name} 的财务数据")
 
             # 只保留最近几年的数据
-            if '日期' in financial_data.columns:
-                financial_data['日期'] = pd.to_datetime(financial_data['日期'])
+            if '报告期' in financial_data.columns:
+                financial_data['报告期'] = pd.to_datetime(financial_data['报告期'])
                 cutoff_date = datetime.now() - timedelta(days=365 * years)
-                financial_data = financial_data[financial_data['日期'] >= cutoff_date]
+                financial_data = financial_data[financial_data['报告期'] >= cutoff_date]
+                financial_data = financial_data.sort_values('报告期', ascending=True)
 
             # 重命名列以匹配应用需求
             column_mapping = {
-                '日期': '报告期',
-                '营业收入': '营业收入(亿元)',
+                '报告期': '报告期',
+                '营业总收入': '营业收入(亿元)',
                 '净利润': '净利润(亿元)',
-                '总资产': '总资产(亿元)',
-                '净资产': '净资产(亿元)',
+                '每股净资产': '每股净资产(元)',
                 '资产负债率': '资产负债率(%)',
                 '净资产收益率': '净资产收益率(%)',
-                '每股收益': '每股收益(元)',
+                '基本每股收益': '每股收益(元)',
             }
 
             # 只重命名存在的列
             existing_columns = {k: v for k, v in column_mapping.items() if k in financial_data.columns}
             financial_data = financial_data.rename(columns=existing_columns)
 
+            # 转换单位：同花顺数据可能是字符串格式（如 "91.80亿"）需要转换为数值
+            def parse_value(value):
+                """解析财务数值"""
+                if pd.isna(value) or value == False or value == 'False':
+                    return 0.0
+                if isinstance(value, str):
+                    # 移除单位
+                    value = value.replace('亿', '').replace('万', '').strip()
+                try:
+                    return float(value)
+                except:
+                    return 0.0
+
+            # 转换数值列
+            numeric_columns = ['营业收入(亿元)', '净利润(亿元)', '资产负债率(%)', '净资产收益率(%)', '每股收益(元)', '每股净资产(元)']
+            for col in numeric_columns:
+                if col in financial_data.columns:
+                    financial_data[col] = financial_data[col].apply(parse_value)
+
+            # 计算总资产和净资产（基于每股净资产估算）
+            # 注意：这是估算值，实际应用中应使用更准确的数据源
+            if '每股净资产(元)' in financial_data.columns and '每股净资产(元)' not in financial_data.columns:
+                # 假设总股本约为 18 亿股（需要实际查询）
+                total_shares = 1.8  # 单位：亿股
+                financial_data['净资产(亿元)'] = financial_data['每股净资产(元)'] * total_shares
+                financial_data['总资产(亿元)'] = financial_data['净资产(亿元)'] / (1 - financial_data.get('资产负债率(%)', 50) / 100)
+
             # 添加公司信息
             financial_data['公司名称'] = company_name
             financial_data['股票代码'] = stock_code
 
-            # 转换单位（假设原始数据是元，转换为亿元）
-            for col in ['营业收入(亿元)', '净利润(亿元)', '总资产(亿元)', '净资产(亿元)']:
-                if col in financial_data.columns:
-                    financial_data[col] = financial_data[col] / 100000000
+            # 确保报告期格式正确
+            if '报告期' in financial_data.columns:
+                financial_data['报告期'] = financial_data['报告期'].dt.strftime('%Y-%m-%d')
 
             logger.info(f"成功获取 {company_name} 的真实财务数据，共 {len(financial_data)} 条记录")
             return financial_data
